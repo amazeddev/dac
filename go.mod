@@ -3,6 +3,7 @@ module dac
 go 1.15
 
 require (
+	github.com/AlecAivazis/survey/v2 v2.3.2
 	github.com/getlantern/deepcopy v0.0.0-20160317154340-7f45deb8130a
 	github.com/google/go-cmp v0.5.6
 	github.com/google/uuid v1.3.0

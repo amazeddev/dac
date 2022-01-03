@@ -116,7 +116,11 @@ func ConnectedChainsMulti(connected, configChains []parser.Chain ) []parser.Chai
 	groups := GroupChains(configChains)
 	for _, chain := range connected {
 		chainConnected := ConnectedChains(chain, groups)
-		affectedChains = append(affectedChains, chainConnected...)
+		for _, cc := range chainConnected {
+			if !FindName(affectedChains, cc.Name) {
+				affectedChains = append(affectedChains, cc)
+			}
+		}
 	}
 	return affectedChains
 }

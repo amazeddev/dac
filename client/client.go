@@ -14,17 +14,25 @@ type Rpc_client struct {
 
 type PidArgs struct{Name string; Pid string}
 
-type DelArgs struct{Key string; Base bool}
+type DelArgs struct{Key string}
 
 type Info struct{Name string; Pid string}
 
 func (c *Rpc_client) Connect() error {
 	conn, err := net.Dial("tcp",  "0.0.0.0:42586")
 	if err != nil {
-		log.Fatal("dialing:", err)
 		return err
 	}
 	c.client = rpc.NewClientWithCodec(goridge.NewClientCodec(conn))
+	return nil
+}
+
+func (c *Rpc_client) Ping() error {
+	_, err := net.Dial("tcp",  "0.0.0.0:42586")
+	if err != nil {
+		log.Fatal("dialing:", err)
+		return err
+	}
 	return nil
 }
 
@@ -42,8 +50,8 @@ func (c Rpc_client) SetPid(args PidArgs) (string, error) {
 	return reply, nil
 }
 
-func (c Rpc_client) List(args struct{}) (map[string]string, error) {
-	var reply map[string]string
+func (c Rpc_client) List(args struct{}) ([]string, error) {
+	var reply []string
 	err := c.client.Call(
 		"KVStore.List", 
 		args, 
@@ -51,7 +59,7 @@ func (c Rpc_client) List(args struct{}) (map[string]string, error) {
 	)
 	if err != nil {
 		log.Fatal(err)
-		return map[string]string{}, err
+		return []string{}, err
 	}
 	return reply, nil
 }
