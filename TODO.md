@@ -11,12 +11,14 @@ DAC (Data Analisys Configurator)
 - make it as a repo with ci/cd
 - ~~be able to create python virtual env dor _dac_ to use~~
 - ~~download **_.dac_** data (libs, kvstore executable) on first app start (new instalation) and create venv~~
-- many processings/workflows (procesing as list od objects witch chains, name, etc.) each save own results, and could be run separately
+- ~~many processings/workflows (procesing as list od objects witch chains, name, etc.) each save own results, and could be run separately~~
 - SQL import sypport
 - ~~name, import etc. specified on init (interacrive prompts)~~
 - ~~when _dac run -f_ have to check if all columns that should be removed are ~~
-- possible group of targets for each chain (same prosessing executed on each column of group)
+- ~~possible group of targets for each chain (same prosessing executed on each column of group)~~
 - command to destroy project (clear everything)
+- when group elements change do not run for all but only create or destroy colmns needed
+- ~~show results of delete~~
 
 CONNECTOR
 

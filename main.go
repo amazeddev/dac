@@ -1,12 +1,13 @@
 package main
 
 import (
+	"dac/calculate"
 	"dac/client"
 	"dac/differ"
 	"dac/execute"
 	"dac/interact"
 	"dac/parser"
-	"errors"
+	"dac/present"
 	"flag"
 	"fmt"
 	"log"
@@ -15,11 +16,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/google/uuid"
-	"gopkg.in/yaml.v2"
 )
 
 type GetArgs struct {
@@ -55,98 +54,6 @@ type ChainValiObj struct {
 	Chain parser.Chain
 }
 
-func PrintLogo() {
-	fmt.Println(string("\033[32m"), "    _\n  __| | __ _  ___\n / _` |/ _` |/ __|\n| (_| | (_| | (__\n \\__,_|\\__,_|\\___|", string("\033[0m"))
-	fmt.Println(string("\033[32m"), "data aplications configurator", string("\033[0m"))
-	fmt.Println()
-}
-
-func PrintCheck(val bool) string {
-	if val {
-		return fmt.Sprint(string("\033[32m"), "\u2714", string("\033[0m"))
-	} else {
-		return fmt.Sprint(string("\033[31m"), "\u2718", string("\033[0m"))
-	}
-}
-
-func PrintChain(chain parser.Chain, t string, verbose bool) {
-	var color string
-	colorReset := string("\033[0m")
-
-	switch t {
-	case "delete":
-		color = string("\033[31m")
-	case "update":
-		color = string("\033[33m")
-	case "create":
-		color = string("\033[32m")
-	default:
-		color = string("\033[37m")
-	}
-	fmt.Println()
-	ymlBytes, _ := yaml.Marshal(chain)
-	ymlSlice := strings.Split(string(ymlBytes), "\n")
-	linePerChain := 1
-	if verbose {
-		linePerChain = len(ymlSlice) - 1
-	}
-	for i := range ymlSlice[:linePerChain] {
-		line := ymlSlice[i]
-		if !verbose {
-			line = ymlSlice[i][5:]
-		}
-		fmt.Printf(" %v %v %v\n", color, line, colorReset)
-	}
-}
-
-func PrintResult(chain parser.Chain, cr parser.ImportResp, runType string ) {
-	var color string
-	colorReset := string("\033[0m")
-	switch runType {
-	case "delete":
-		color = string("\033[31m")
-	case "update":
-		color = string("\033[33m")
-	case "create":
-		color = string("\033[32m")
-	default:
-		color = string("\033[37m")
-	}
-	fmt.Println()
-	fmt.Printf("  chain: %20s;\ttype: %s%s%s\n", chain.Name, color, runType, colorReset)
-	fmt.Println("  steps:")
-	for _, s := range chain.Steps {
-		fmt.Printf("    \u2022 %v\n", s.Function)
-		if len(s.Args) > 0{
-			for k, v := range s.Args {
-				fmt.Printf("\t%v: %v\n", k, v)
-			}
-		}
-	}
-
-	if len(cr.Resp) > 0 {
-		if runType == "delete" {
-			fmt.Println("  deleted columns:")
-		} else {
-			fmt.Println("  result columns:")
-		}
-		for _, r := range cr.Resp {
-			fmt.Printf("    \u2022 %v (%+v)\n", r.Name, r.Id)
-		}
-	}
-	fmt.Println()
-}
-
-func PrintHelp() {
-	fmt.Println("DAC package help")
-	fmt.Println("\npossible commands:")
-	fmt.Println("  \u2022 init      # initialize project")
-	fmt.Println("  \u2022 validate  # validate current configuration")
-	fmt.Println("  \u2022 run       # run current configuration")
-	fmt.Println("  \u2022 stop      # stop interactive mode")
-	fmt.Println("\nfor more informations about command run 'dac *command* -h'")
-}
-
 func Find(slice []string, val string) (int) {
     for i, item := range slice {
         if item == val {
@@ -156,15 +63,16 @@ func Find(slice []string, val string) (int) {
     return -1
 }
 
+
 func main() {
 
 	help := flag.Bool("h", false, "current environment")
 	flag.Parse()
 	if *help {
-		PrintHelp()
+		present.PrintHelp()
 	}
 
-	commands := []string{"init", "list", "import", "validate", "run", "check", "stop", "clear"}
+	commands := []string{"init", "list", "-h", "help", "import", "validate", "compare", "run", "check", "stop", "clear"}
 	if Find(commands, os.Args[1]) == -1 {
 		fmt.Printf("dac: '%s' is not a dac command; see 'dac -h' for help\n", os.Args[1])
 	}
@@ -172,12 +80,15 @@ func main() {
 	initCmd := flag.NewFlagSet("init", flag.ExitOnError)
 
 	valCmd := flag.NewFlagSet("validate", flag.ExitOnError)
-	valWide := valCmd.Bool("v", false, "# verbose, wheather to show full chain data")
-	valAll := valCmd.Bool("a", false, "# all, wheather to show all chain, also not changed ones")
+
+	comCmd := flag.NewFlagSet("compare", flag.ExitOnError)
+	comWide := comCmd.Bool("v", false, "# verbose, wheather to show full chain data")
+	comAll := comCmd.Bool("a", false, "# all, wheather to show all chain, also not changed ones")
 
 	runCmd := flag.NewFlagSet("run", flag.ExitOnError)
 	runIntact := runCmd.Bool("i", false, "# interactive mode, not clear storage after run")
 	runForce := runCmd.Bool("f", false, "# force mode, ignore previous calculations & run all")
+	runWflow := runCmd.String("w", "", "# workflow, run only specified workflow")
 
 	checkCmd := flag.NewFlagSet("check", flag.ExitOnError)
 	checkKey := checkCmd.String("k", "", "# key, stored data table name")
@@ -190,7 +101,7 @@ func main() {
 
 	case "init":
 		initCmd.Parse(os.Args[2:])
-		PrintLogo()
+		present.PrintLogo()
 
 		// check setup
 		_, err := os.Stat(fmt.Sprintf("%v/%v", home, ".dac"))
@@ -246,7 +157,7 @@ func main() {
 			dataSrcPath := interact.StringPrompt("data source path: ")
 
 			configImport.Type = dataSrcType
-			configImport.Dataset = dataSrcPath
+			configImport.Path = dataSrcPath
 		}
 
 		baseConfig := parser.Config{
@@ -258,7 +169,7 @@ func main() {
 
 		err = parser.WriteConfig(baseConfig, fmt.Sprintf("%v/%v", dirName, "main.yml"))
 		if err != nil {
-			fmt.Println("Error: ", err)
+			fmt.Println("\u1F4A5 Error: ", err)
 		}
 
 		fmt.Printf("\ncreated project: %v\nin directory:\t %v\n\n", projName, path)
@@ -285,7 +196,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		filepath, _ := filepath.Abs(fmt.Sprintf("%s/%s", current, config.Import.Dataset))
+		filepath, _ := filepath.Abs(fmt.Sprintf("%s/%s", current, config.Import.Path))
 		
 		out, err := execute.RunData(home, "imprt", execute.DataArgs{Name: config.Name, Path: filepath})
 		if err != nil {
@@ -301,41 +212,69 @@ func main() {
 
 	case "validate":
 		valCmd.Parse(os.Args[2:])
+		fmt.Print("validation: \n\n")
+
+		consStruct := true
+		config, err := parser.Parse() // parsed raw config
+		if err != nil {
+			consStruct = false
+			fmt.Println("Error: ", err)
+		}
+		fmt.Println("base checks:")
+		fmt.Printf("  [%s] parse main.yml\n", present.PrintCheck(consStruct))
+		fmt.Printf("  [%s] configuration have name\n", present.PrintCheck(config.Name != ""))
+		fmt.Printf("  [%s] configuration have import statement\n", present.PrintCheck(config.Import.Path != ""))
+		fmt.Printf("  [%s] configuration have workflows\n", present.PrintCheck(len(config.Workflows) > 0))
+
+		for _, w := range config.Workflows {
+			fmt.Print("\nworkflow ", w.Name, " checks:\n")
+			fmt.Printf("  [%s] workflow have name\n", present.PrintCheck(w.Name != ""))
+			fmt.Printf("  [%s] workflow have chains\n", present.PrintCheck(len(w.Chains) > 0))
+		}
+
+	
+	case "compare":
+		comCmd.Parse(os.Args[2:])
 
 		config, err := parser.Parse() // parsed raw config
 		if err != nil {
 			log.Fatal(err)
 		}
 		exist_config := []parser.Chain{}
-		if _, err := os.Stat(".dac/config/.build.yml"); err == nil {
-			parsed, _ := parser.GetConfig(".dac/config/.build.yml")
-			exist_config = parsed.Workflows[0].Chains
-		}
 
-		deleted, updated, created := differ.FindDiffs(exist_config, config.Workflows[0].Chains)
-
-		validateChains := make([]ChainValiObj, len(config.Workflows[0].Chains))
-		for i, e := range config.Workflows[0].Chains {
-			validateChains[i] = ChainValiObj{"exist", e}
-		}
-		for i, e := range created {
-			validateChains[i] = ChainValiObj{"create", e}
-		}
-		for i, e := range updated {
-			validateChains[i] = ChainValiObj{"update", e}
-		}
-		for i, e := range deleted {
-			validateChains = append(validateChains[:i], append([]ChainValiObj{{"delete", e}}, validateChains[i:]...)...)
-		}
-
-		for _, e := range validateChains {
-			if !*valAll && e.T == "exist" {
-				continue
+		for widx := range config.Workflows {
+			fmt.Println("workflow: ", config.Workflows[widx].Name)
+			if _, err := os.Stat(".dac/config/.build.yml"); err == nil {
+				parsed, _ := parser.GetConfig(".dac/config/.build.yml")
+				exist_config = parsed.Workflows[widx].Chains
 			}
-			PrintChain(e.Chain, e.T, *valWide)
-		}
 
-		fmt.Printf("\ncreated: %v, updated: %v, deleted: %v (of %v chains total)\n", len(created), len(updated), len(deleted), len(config.Workflows[0].Chains))
+			deleted, updated, created := differ.FindDiffs(exist_config, config.Workflows[widx].Chains)
+
+			validateChains := make([]ChainValiObj, len(config.Workflows[widx].Chains))
+			for i, e := range config.Workflows[widx].Chains {
+				validateChains[i] = ChainValiObj{"exist", e}
+			}
+			for i, e := range created {
+				validateChains[i] = ChainValiObj{"create", e}
+			}
+			for i, e := range updated {
+				validateChains[i] = ChainValiObj{"update", e}
+			}
+			for i, e := range deleted {
+				validateChains = append(validateChains[:i], append([]ChainValiObj{{"delete", e}}, validateChains[i:]...)...)
+			}
+
+			for _, e := range validateChains {
+				if !*comAll && e.T == "exist" {
+					continue
+				}
+				present.PrintChain(e.Chain, e.T, *comWide)
+			}
+
+			fmt.Printf("\n  created: %v, updated: %v, deleted: %v (of %v chains total)\n\n", len(created), len(updated), len(deleted), len(config.Workflows[widx].Chains))
+
+		}
 
 	case "run":
 
@@ -346,452 +285,559 @@ func main() {
 		}
 
 		var kvs client.Rpc_client
-		err = kvs.Connect()
+		err = execute.StartEngin(&kvs, config.Name, home)
 		if err != nil {
-			fmt.Print("(re)initializing project engine... ")
-			cmd := exec.Command(fmt.Sprintf("%v/%v", home, ".dac/kvstorage"))
-			cmd.Env = os.Environ()
-			cmd.Stdin = nil
-			cmd.Stdout = nil
-			cmd.Stderr = nil
-			cmd.ExtraFiles = nil
-			cmd.SysProcAttr = &syscall.SysProcAttr{
-				Setsid: true,
-			}
-
-			if err := cmd.Start(); err != nil {
-				panic(err)
-			}
-
-			time.Sleep(2 * time.Second)
-
-			err = kvs.Connect()
-			if err != nil {
-				panic(err)
-			}
-
-			_, err := kvs.SetPid(client.PidArgs{Name: config.Name, Pid: fmt.Sprint(cmd.Process.Pid)})
-			if err != nil {
-				panic(err)
-			}
-			fmt.Printf("DONE!\n")
+			log.Fatal(err)
 		}
 
-		var conf parser.Config // empty object for wide config
-
-		var deleted map[int]parser.Chain
-		var updated map[int]parser.Chain
-		var created map[int]parser.Chain
-
-		exist_chains := []parser.Chain{}
-
-		exist := false
-		storagecols, err := kvs.List(struct{}{})
+		storagecols, err := kvs.List(struct{}{})		
 		if err != nil {
 			log.Fatal(err)
 		}
 		
-		fmt.Println("\nrun modes: ")
-		fmt.Println(" \u2022 interactive: ", PrintCheck(*runIntact))
-		fmt.Println(" \u2022 force:       ", PrintCheck(*runForce))
-		
-		if _, err := os.Stat(".dac/config/.build.yml"); err == nil && !*runForce {
-			exist = true
+		rerun := false
+		var conf parser.Config // empty object for wide config
+		exist_config := parser.Config{}
+		exist_config.Name = config.Name
+		exist_config.Engine = config.Engine
+		exist_config.Import.Path = config.Import.Path
 
+		conf.Name = config.Name
+		conf.Engine = config.Engine
+		conf.Import.Path = config.Import.Path
+		conf.Workflows = []parser.Workflow{}
+
+		if _, err := os.Stat(".dac/config/.build.yml"); err == nil && !*runForce {
+			rerun = true
+			exist_config, _ = parser.GetConfig(".dac/config/.build.yml")
+		} 
+
+		if _, err := os.Stat(".dac/config/.build.wide.yml"); err == nil && !*runForce {
 			conf, _ = parser.GetConfig(".dac/config/.build.wide.yml")
-			old_config, _ := parser.GetConfig(".dac/config/.build.yml")
-			exist_chains = old_config.Workflows[0].Chains
+
+		}
+
+		
+		fmt.Println("\nrun modes: ")
+		fmt.Println(" \u2022 interactive: ", present.PrintCheck(*runIntact))
+		fmt.Println(" \u2022 force:       ", present.PrintCheck(*runForce))
+		// fmt.Println(" \u2022 workflow:    ", PrintCheck(*runWflow != ""))
+		fmt.Println()
+
+		workflowloop: for widx := range config.Workflows {
+			if *runWflow != "" && *runWflow != config.Workflows[widx].Name {
+				continue
+			}
+
+			conf_wfs := []string{}
+			for _, w := range conf.Workflows {
+				conf_wfs = append(conf_wfs, w.Name)
+			}
+			cwf_idx := Find(conf_wfs, config.Workflows[widx].Name)
+
+			wide_workflow := parser.Workflow{}
+
+			if rerun && cwf_idx != -1 {
+				wide_workflow.Name = conf.Workflows[cwf_idx].Name
+				wide_workflow.Data = conf.Workflows[cwf_idx].Data
+				wide_workflow.Chains = append([]parser.Chain{}, conf.Workflows[cwf_idx].Chains...)
+			} else {
+				wide_workflow.Name = config.Workflows[widx].Name
+				wide_workflow.Data = config.Workflows[widx].Data
+				wide_workflow.Chains = append(wide_workflow.Chains, config.Workflows[widx].Chains...)
+			}
+
+			fmt.Println("workflow: ", string("\033[36m"), wide_workflow.Name, string("\033[0m"))
+
+			var deleted map[int]parser.Chain
+			var updated map[int]parser.Chain
+			var created map[int]parser.Chain
+
+			exist_chains := []parser.Chain{}
+			exist_wfs := []string{}
+			for _, w := range exist_config.Workflows {
+				exist_wfs = append(exist_wfs, w.Name)
+			}
+			if rerun {
+				workflow_idx := Find(exist_wfs, wide_workflow.Name)
+				if workflow_idx != -1 {
+					exist_chains = exist_config.Workflows[workflow_idx].Chains
+				}
+			}
+
+			deleted, updated, created = differ.FindDiffs(exist_chains, config.Workflows[widx].Chains)
+
+			oper_chains_names := []string{}
+			for _, chain := range created {
+				oper_chains_names = append(oper_chains_names, chain.Name) 
+			}
+			for _, chain := range updated {
+				oper_chains_names = append(oper_chains_names, chain.Name) 
+			}
+
+			// * handle DELETED *
+			delChains := []parser.Chain{}
+
+			cols_to_delete := []string{}
+			storage_to_delete := []string{}
+
+			if len(deleted) > 0 {
+				filtered_chains := wide_workflow.Chains[:0]
+				mainloop: for idx, chain := range wide_workflow.Chains {
+					for _, dch := range deleted {
+						if dch.Name == chain.Name {
+							delChains = append(delChains, wide_workflow.Chains[idx])
+							continue mainloop
+						}
+					}
+					filtered_chains = append(filtered_chains, chain)
+				}
+		
+				wide_workflow.Chains = filtered_chains
+			}
+
+			for _, ch := range delChains {
+				for _, e := range ch.Results {
+					storage_to_delete = append(storage_to_delete, e.Id)
+
+					if Find(cols_to_delete, e.Name) == -1 {
+						cols_to_delete = append(cols_to_delete, e.Name)
+					}
+				}
+			}
+
+			// * handle FORCE CLEAR *
+
+			if *runForce {
+				storedcol, err := kvs.List(struct{}{})
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				for _, col := range storedcol {
+					args := client.DelArgs{Key: col}
+					_, err := kvs.Delete(args)
+					if err != nil {
+						panic(err)
+					}
+				}
+			}
+
+			// *handle UPDATED*
+			updChains := []parser.Chain{}
+
+			for ind := range updated {
+				updChains = append(updChains, updated[ind])
+			}
+
+			updAffected := differ.ConnectedChainsMulti(updChains, config.Workflows[widx].Chains)
+
+			for i, ch := range updAffected {
+				var ind int
+			confloop:
+				for i, c := range wide_workflow.Chains {
+					if c.Name == ch.Name {
+						ind = i
+						for _, e := range c.Results {
+							storage_to_delete = append(storage_to_delete, e.Id)
+						}
+						break confloop
+					}
+				}
+
+				new_chain := parser.Chain{Name: ch.Name, Link: ch.Link, Target: ch.Target, Group: ch.Group}
+				if wide_workflow.Chains[ind].Id == "" {
+					new_chain.Id = strings.Replace(uuid.New().String(), "-", "", -1)
+				} else {
+					new_chain.Id = wide_workflow.Chains[ind].Id
+				}
+				new_chain.Steps = append(new_chain.Steps, ch.Steps...)
+
+
+				wide_workflow.Chains[ind] = new_chain
+				updAffected[i] = new_chain
+			}
+
+			// * handle CREATED *
+			creChains := []parser.Chain{}
+
+			for ind, chain := range created {
+				new_chain := parser.Chain{Name: chain.Name, Link: chain.Link, Target: chain.Target, Group: chain.Group}
+				new_chain.Id = strings.Replace(uuid.New().String(), "-", "", -1)
+				new_chain.Steps = append(new_chain.Steps, chain.Steps...)
+
+				if rerun && cwf_idx != -1 {
+					wide_workflow.Chains = append(wide_workflow.Chains[:ind], append([]parser.Chain{new_chain}, wide_workflow.Chains[ind:]...)...)
+				} else {
+					wide_workflow.Chains[ind] = new_chain
+				}
+
+				creChains = append(creChains, new_chain)
+			}
+
+			chains_names := []string{}
+			for _, ch := range wide_workflow.Chains {
+				chains_names = append(chains_names, ch.Name)
+			}
+
+			runChains := append(updAffected, creChains...)
+			if len(delChains) + len(runChains) == 0 {
+				fmt.Print("\n  \u2755 no changes in configuration for workflow, no action to do...\n")
+				fmt.Print("     to run all chains anyway, try to use force mode 'dac run -f [-w=workflow] [-i]'\n\n")
+
+				continue workflowloop
+			}
+
+			if rerun {
+				for _, chain := range runChains {
+					if chain.Link != "" && Find(oper_chains_names, chain.Link) == -1 {
+						runChains = append(differ.FindLink(chain, wide_workflow, chains_names, oper_chains_names, storagecols), runChains...)
+					}
+				}
+			}
+			// create chain map (map[chain.Name]chain."Info")
+			chain_map := map[string]parser.ChainMapElem{}
+			linked_chans := []string{}
+			for cind, chain := range wide_workflow.Chains {
+				chain_map[chain.Name] = parser.ChainMapElem{Idx: cind, Link: chain.Link}
+				if chain.Link != "" && Find(linked_chans, chain.Link) == -1 {
+					linked_chans = append(linked_chans, chain.Link)
+				}
+			}
+
+			// * handle IMPORT *
+
+			import_names := []string{}
+			for _, imp := range conf.Import.Columns {
+				import_names = append(import_names, imp.Name)
+			}
+
+			fetch_cols := []string{}
+			for _, chain := range runChains {
+				if chain.Link == "" {
+					base_chain := wide_workflow.Chains[chain_map[chain.Name].Idx]
+
+					for _, t := range append(base_chain.Target, base_chain.Group...) {
+						ind := Find(import_names, t)
+
+						if ind == -1 || Find(storagecols, conf.Import.Columns[ind].Id) == -1 {
+							fetch_cols = append(fetch_cols, t)
+						}
+					}
+				}
+			}
 
 			cols := map[string]string{}
 			for _, e := range conf.Import.Columns {
-				cols[e.Id] = e.Name
+				cols[e.Name] = e.Id
 			}
 
-		} else if errors.Is(err, os.ErrNotExist) || *runForce {
-			conf.Name = config.Name
-			conf.Engine = config.Engine
-			conf.Import.Dataset = config.Import.Dataset
-
-			for i, w := range config.Workflows {
-				conf.Workflows = append(conf.Workflows, parser.Workflow{})
-				conf.Workflows[i].Name = w.Name
-				conf.Workflows[i].Chains = append(conf.Workflows[i].Chains, w.Chains...)
-			}
-
-		} else {
-			log.Fatal(err)
-		}
-
-		deleted, updated, created = differ.FindDiffs(exist_chains, config.Workflows[0].Chains)
-
-		oper_chains_names := []string{}
-		for _, chain := range created {
-			oper_chains_names = append(oper_chains_names, chain.Name) 
-		}
-		for _, chain := range updated {
-			oper_chains_names = append(oper_chains_names, chain.Name) 
-		}
-
-		// *handle DELETED*
-		delChains := []parser.Chain{}
-
-		for ind := range deleted {
-			delChains = append(delChains, conf.Workflows[0].Chains[ind])
-		}
-
-		delAffected := differ.ConnectedChainsMulti(delChains, conf.Workflows[0].Chains)
-
-		if len(delAffected) > 0 {
-			fmt.Println("\ndeleted chains: ")
-		}
-		cols_to_delete := []string{}
-		for _, ch := range delAffected {
-			for _, e := range ch.Results {
-				args := client.DelArgs{Key: e.Id}
-				_, err := kvs.Delete(args)
-				if err != nil {
-					panic(err)
-				}
-				if Find(cols_to_delete, e.Name) == -1 {
-					cols_to_delete = append(cols_to_delete, e.Name)
-				}
-			}
-			PrintResult(ch, parser.ImportResp{Resp: ch.Results}, "delete")
-		}
-
-		delete_keys := []int{}
-		for k, _ := range deleted {
-			delete_keys = append(delete_keys, k)
-		} 
-
-		if len(delete_keys) > 0 {
-			filtered_chains := conf.Workflows[0].Chains[:0]
-			mainloop: for _, chain := range conf.Workflows[0].Chains {
-				for _, dch := range deleted {
-					if dch.Name == chain.Name {
-						continue mainloop
-					}
-				}
-				filtered_chains = append(filtered_chains, chain)
-			}
-	
-			conf.Workflows[0].Chains = filtered_chains
-		}
-
-		if len(cols_to_delete) > 0 || *runForce {
-			_, err = execute.RunData(home, "remove", execute.DataArgs{Name: config.Name, Columns: cols_to_delete, Key: conf.Workflows[0].Name})
+			fmt.Println("\n  workflow checks: ")
+			out, err := execute.RunData(home, "fetchInfo", execute.DataArgs{Name: config.Name, Key: wide_workflow.Data})
 			if err != nil {
 				fmt.Println("Error: ", err)
 			}
-		}
 
-		if *runForce {
-			storedcol, err := kvs.List(struct{}{})
+			fetchInfoResp := parser.ImportResp{}
+			fetchInfoResp.ParseImportResp(out)
+
+			fetch_info_cols := []string{}
+			fetch_ok := true
+			for _, col := range fetchInfoResp.Resp {
+				fetch_info_cols = append(fetch_info_cols, col.Name)
+			}
+			for _, col := range fetch_cols {
+				if Find(fetch_info_cols, col) == -1 {
+					fetch_ok = false
+					break
+				}
+			}
+			fmt.Printf("    [%s] necesary base columns available\n", present.PrintCheck(fetch_ok))
+
+			link_ok := true
+			for _, lc := range linked_chans {
+				if Find(chains_names, lc) == -1 {
+					link_ok = false
+					break
+				}
+			}
+			fmt.Printf("    [%s] all linked chains available\n", present.PrintCheck(link_ok))
+
+			inputFuncs := []string{"ffill", "bfill", "cfill", "meanfill"}
+			encodeFuncs := []string{"encode", "digitize"}
+			transFuncs := []string{"normalize"}
+
+			funcs_ok := true
+			for _, chain := range wide_workflow.Chains {
+				for _, step := range chain.Steps {
+					if step.StepType == "" {
+						f := strings.Split(step.Function, ".")
+						switch f[0]{
+						case "input":
+							if Find(inputFuncs, f[1]) == -1 {
+								funcs_ok = false
+								break
+							}
+						case "encode":
+							if Find(encodeFuncs, f[1]) == -1 {
+								funcs_ok = false
+								break
+							}
+						case "trans":
+							if Find(transFuncs, f[1]) == -1 {
+								funcs_ok = false
+								break
+							}
+						}
+					}
+				}
+			}
+			fmt.Printf("    [%s] correct steps functions\n", present.PrintCheck(funcs_ok))
+
+			if !fetch_ok || !link_ok || !funcs_ok {
+				fmt.Println("\n  \u2757 one or more checks failed, workflow processing could not continue...")
+				continue workflowloop
+			}
+
+			if len(fetch_cols) > 0 {
+				out, err := execute.RunData(home, "fetch", execute.DataArgs{Name: config.Name, Columns: fetch_cols, Key: wide_workflow.Data})
+				if err != nil {
+					fmt.Println("Error: ", err)
+				}
+
+				ir := parser.ImportResp{}
+				ir.ParseImportResp(out)
+
+				for _, col := range ir.Resp {
+					ind := Find(import_names, col.Name)
+					if ind != -1 {
+						conf.Import.Columns[ind] = col
+					} else {
+						conf.Import.Columns = append(conf.Import.Columns, col)
+					}
+					cols[col.Name] = col.Id
+				}
+
+				fetch_errors := []string{}
+				for _, e := range ir.Errors {
+					fetch_errors = append(fetch_errors, e.Name)
+				}
+
+				fmt.Println("\n  data fetched from dataset:")
+				for _, c := range fetch_cols {
+					if Find(fetch_errors, c) == -1 {
+						fmt.Printf("    \u2022 %s (%s)\n", c, cols[c])
+					}
+				}
+
+				if len(fetch_errors) > 0 {
+					fmt.Println("  fetch errors:")
+					for _, e := range ir.Errors {
+						fmt.Printf("    \u2757 %s \n", e.Error)
+					}
+				}
+			}
+
+			import_map := map[string]parser.ImportMapElem{}
+			for i, col := range conf.Import.Columns {
+				import_map[col.Name] = parser.ImportMapElem{Idx: i, Id: col.Id}
+			}
+
+			// * handle CALCULATIONS *
+
+			no_run_chains := []string{}
+			proceed_on_fail := false
+
+			if len(runChains) + len(delChains) > 0 {
+				fmt.Print("\n  updated chains:\n")
+			}
+			affectedGroups := differ.GroupChains(runChains)
+			for _, group := range affectedGroups {
+
+				if len(no_run_chains) > 0 && !proceed_on_fail {
+					fmt.Println("\n  \u2755 one or more chain failed, result data will be missing some columns")
+					proceed_on_fail = interact.ConfirmPrompt("  would you like to proceed and try to complete rest?")
+					if !proceed_on_fail {
+						fmt.Println("\nexecution stoped by user...")
+								
+						if !*runIntact {
+							execute.StopEngine(kvs)
+							if err != nil {
+								fmt.Println("Error: ", err)
+							}
+						}
+						os.Exit(0)
+					}
+				}
+
+				calcchan := make(chan parser.CalcResults, 1)
+				wg := new(sync.WaitGroup)
+
+				calculated := map[string]parser.CalcResults{}
+
+				var mutex sync.Mutex
+
+				for i, chain := range group {
+					
+					if len(chain.Group) == 0 {
+						wg.Add(1)
+						go calculate.CalculateChain(
+							chain, i, "", wide_workflow, chain_map, import_map, no_run_chains, home, wg, calcchan,
+						)
+					} else {
+						wg.Add(len(chain.Group))
+						for i, ge := range chain.Group {
+							go calculate.CalculateChain(
+								chain, i, ge, wide_workflow, chain_map, import_map, no_run_chains, home, wg, calcchan,
+							)
+						}
+					}
+
+					go func() {
+						for cr := range calcchan {
+							runType := "update"
+							for _, r := range created {
+								if r.Name == cr.Chain.Name {
+									runType = "create"
+									break
+								}
+							}
+							cr.RunType = runType
+							mutex.Lock()
+							if _, ok := calculated[cr.Chain.Name]; ok {
+								tmp_calc := calculated[cr.Chain.Name]
+								tmp_calc.Responses = append(tmp_calc.Responses, cr.Responses...)
+								tmp_calc.Errors = append(tmp_calc.Errors, cr.Errors...)
+								calculated[cr.Chain.Name] = tmp_calc
+								wide_workflow.Chains[chain_map[cr.Chain.Name].Idx].Results = append(wide_workflow.Chains[chain_map[cr.Chain.Name].Idx].Results, cr.Responses...)
+							} else {
+								calculated[cr.Chain.Name] = cr
+								wide_workflow.Chains[chain_map[cr.Chain.Name].Idx].Results = cr.Responses
+								wide_workflow.Chains[chain_map[cr.Chain.Name].Idx].Results = cr.Responses
+							}
+							if !cr.Success {
+								no_run_chains = append(no_run_chains, cr.Chain.Name)
+							}
+							mutex.Unlock()
+							wg.Done()
+						}
+					}()		
+				}
+				wg.Wait()
+				for _, calc := range calculated {
+					present.PrintResult(calc.Chain, calc.Responses, calc.Errors, calc.RunType, calc.Status)
+				}
+			}
+
+			// * handle CLEANUP *
+
+			wf_idx := Find(exist_wfs, wide_workflow.Name)
+
+			exist_chains_names := []string{}
+			for _, ch := range exist_chains {
+				exist_chains_names = append(exist_chains_names, ch.Name)
+			}
+			
+			filtered_wf := parser.Workflow{}
+			filtered_wf.Name = config.Workflows[widx].Name
+			filtered_wf.Data = config.Workflows[widx].Data
+
+			for _, ch := range config.Workflows[widx].Chains {
+				if Find(no_run_chains, ch.Name) == -1 {
+					filtered_wf.Chains = append(filtered_wf.Chains, ch)
+				} else {
+					exist_idx := Find(exist_chains_names, ch.Name)
+					if exist_idx != -1 {
+						filtered_wf.Chains = append(filtered_wf.Chains, exist_chains[exist_idx])
+					}
+				}
+			}
+			
+			if wf_idx == -1 {
+				exist_config.Workflows = append(exist_config.Workflows, filtered_wf)
+			} else {
+				exist_config.Workflows[wf_idx] = filtered_wf
+			}
+
+			err = parser.WriteConfig(exist_config, ".dac/config/.build.yml")
 			if err != nil {
 				log.Fatal(err)
 			}
 
-			for _, col := range storedcol {
-				args := client.DelArgs{Key: col}
-				_, err := kvs.Delete(args)
-				if err != nil {
-					panic(err)
-				}
+			conf_wfs_names := []string{}
+			for _, w := range conf.Workflows {
+				conf_wfs_names = append(conf_wfs_names, w.Name)
 			}
-		}
-
-		// *handle UPDATED*
-		updChains := []parser.Chain{}
-
-		for ind := range updated {
-			updChains = append(updChains, updated[ind])
-		}
-
-		updAffected := differ.ConnectedChainsMulti(updChains, config.Workflows[0].Chains)
-
-		for i, ch := range updAffected {
-			var ind int
-		confloop:
-			for i, c := range conf.Workflows[0].Chains {
-				if c.Name == ch.Name {
-					ind = i
-					for _, e := range c.Results {
-						args := client.DelArgs{Key: e.Id}
-						_, err := kvs.Delete(args)
-						if err != nil {
-							panic(err)
-						}
-					}
-					break confloop
-				}
-			}
-
-			new_chain := parser.Chain{Name: ch.Name, Link: ch.Link, Target: ch.Target}
-			if conf.Workflows[0].Chains[ind].Id == "" {
-				new_chain.Id = strings.Replace(uuid.New().String(), "-", "", -1)
+			
+			wf_idx = Find(conf_wfs_names, wide_workflow.Name)
+			
+			if wf_idx == -1 {
+				conf.Workflows = append(conf.Workflows, wide_workflow)
 			} else {
-				new_chain.Id = conf.Workflows[0].Chains[ind].Id
-			}
-			new_chain.Steps = append(new_chain.Steps, ch.Steps...)
-
-
-			conf.Workflows[0].Chains[ind] = new_chain
-			updAffected[i] = new_chain
-		}
-
-		// * handle CREATED *
-		creChains := []parser.Chain{}
-
-		for ind, chain := range created {
-			new_chain := parser.Chain{Name: chain.Name, Link: chain.Link, Target: chain.Target}
-			new_chain.Id = strings.Replace(uuid.New().String(), "-", "", -1)
-			new_chain.Steps = append(new_chain.Steps, chain.Steps...)
-
-			if exist {
-				conf.Workflows[0].Chains = append(conf.Workflows[0].Chains[:ind], append([]parser.Chain{new_chain}, conf.Workflows[0].Chains[ind:]...)...)
-			} else {
-				conf.Workflows[0].Chains[ind] = new_chain
+				conf.Workflows[wf_idx] = wide_workflow
 			}
 
-			creChains = append(creChains, new_chain)
-		}
-
-		chains_names := []string{}
-		for _, ch := range conf.Workflows[0].Chains {
-			chains_names = append(chains_names, ch.Name)
-		}
-
-		runChains := append(updAffected, creChains...)
-		if len(delAffected) == 0 && len(runChains) == 0 {
-			fmt.Println("\nnothing to do...\n")
-		}
-
-		for _, chain := range runChains {
-			if chain.Link != "" && exist && Find(oper_chains_names, chain.Link) == -1 {
-				link_chain := conf.Workflows[0].Chains[Find(chains_names, chain.Link)]
-				
-				for _, res := range link_chain.Results {
-					if Find(storagecols, res.Id) == -1 {
-						runChains = append([]parser.Chain{link_chain}, runChains...)
-					}
-				}
-			}
-		}
-
-		// * handle IMPORT *
-		columns := []string{}
-
-		import_names := []string{}
-		for _, imp := range conf.Import.Columns {
-			import_names = append(import_names, imp.Name)
-		}
-
-		fetch_cols := []string{}
-		for _, chain := range runChains {
-			if chain.Link == "" {
-				base_chain := parser.Chain{}
-				for _, ch := range config.Workflows[0].Chains {
-					if ch.Name == chain.Name {
-						base_chain = ch
-					}
-				}
-
-				for _, t := range base_chain.Target {
-					ind := Find(import_names, t)
-
-					if ind == -1 || Find(storagecols, conf.Import.Columns[ind].Id) == -1 {
-						fetch_cols = append(fetch_cols, t)
-					}
-				}
-			}
-		}
-
-		cols := map[string]string{}
-		for _, e := range conf.Import.Columns {
-			cols[e.Name] = e.Id
-		}
-
-		if len(fetch_cols) > 0 {
-			out, err := execute.RunData(home, "fetch", execute.DataArgs{Name: config.Name, Columns: fetch_cols})
+			err = parser.WriteConfig(conf, ".dac/config/.build.wide.yml")
 			if err != nil {
-				fmt.Println("Error: ", err)
+				log.Fatal(err)
 			}
 
-			ir := parser.ImportResp{}
-			ir.ParseImportResp(out)
-			for _, col := range ir.Resp {
-				ind := Find(import_names, col.Name)
-				if ind != -1 {
-					conf.Import.Columns[ind] = col
-				} else {
-					conf.Import.Columns = append(conf.Import.Columns, col)
-				}
-				cols[col.Name] = col.Id
-			}
-
-
-
-			fmt.Println("\ndata fetched from dataset:")
-			for _, c := range fetch_cols {
-				fmt.Printf("  - %s (%s)\n", c, cols[c])
-			}
-		}
-
-		// * handle CALCULATIONS *
-
-		if len(runChains) > 0 {
-			fmt.Println("\ncalculated chains:")
-		}
-		affectedGroups := differ.GroupChains(runChains)
-		for gi, group := range affectedGroups {
-			wg := new(sync.WaitGroup)
-
-			for i, chain := range group {
-				targets := []string{}
-
-				// find linked chain
-				if chain.Link != "" {
-					var linked_chain parser.Chain
-					
-					for _, chainToLink := range conf.Workflows[0].Chains {
-						if chainToLink.Name == chain.Link {
-							linked_chain = chainToLink
-						}
-					}
-					if len(chain.Target) == 0 {
-						for _, r := range linked_chain.Results {
-							targets = append(targets, r.Id)
-						}
-					} else {
-						for _, r := range linked_chain.Results {
-							for _, t := range chain.Target {
-								if t == r.Name {
-									targets = append(targets, r.Id)
-								}
-							}
-						}
-					}
-				} else {
-					base_chain := parser.Chain{}
-					for _, ch := range config.Workflows[0].Chains {
-						if ch.Name == chain.Name {
-							base_chain = ch
-						}
-					}
-					for _, t := range base_chain.Target {
-						targets = append(targets, cols[t])
-					}
-				}
-				affectedGroups[gi][i].Target = targets
-			}
-
-			var mutex sync.Mutex
-
-			for i, chain := range group {
-				wg.Add(1)
-				go func(chain parser.Chain, i int) {
-
-					out, err := execute.RunChain(home, parser.Chain{Id: chain.Id, Name: chain.Name, Target: chain.Target, Steps: chain.Steps, Link: chain.Link})
-					
+			for _, col_id := range storage_to_delete {
+					args := client.DelArgs{Key: col_id}
+					_, err := kvs.Delete(args)
 					if err != nil {
-						fmt.Println("Error: ", err)
+						panic(err)
 					}
-
-					cr := parser.ImportResp{}
-					cr.ParseImportResp(out)
-					chain.Results = cr.Resp
-					mutex.Lock()
-					for i, origChain := range conf.Workflows[0].Chains {
-						if chain.Id == origChain.Id {
-							conf.Workflows[0].Chains[i] = chain
-							break
-						}
-					}
-					mutex.Unlock()
-
-					runType := "update"
-					for _, r := range created {
-						if r.Name == chain.Name {
-							runType = "create"
-							break
-						}
-					}
-
-					PrintResult(chain, cr, runType)
-
-					for _, r := range chain.Results {
-						columns = append(columns, r.Name)
-					}
-
-					wg.Done()
-				}(chain, i)
 			}
-			wg.Wait()
-		}
 
-		// *handle RESULT STORAGE *
-
-		targets := []string{}
-		for _, chain := range conf.Workflows[0].Chains {
-			for i := range chain.Target {
-				targets = append(targets, chain.Target[i])
-			}
-		}
-
-		all_affected := []string{}
-		for _, ch := range runChains {
-			all_affected = append(all_affected, ch.Name)
-		}
-		results := []string{}
-		for _, chain := range conf.Workflows[0].Chains {
-			if Find(all_affected, chain.Name) != -1 {
-				resloop: for i := range chain.Results {
-					for _, t := range targets {
-						if t == chain.Results[i].Id {
-							break resloop
-						}
-					}
-					results = append(results, chain.Results[i].Id)
+			
+			if len(cols_to_delete) > 0 || *runForce {
+				_, err = execute.RunData(home, "remove", execute.DataArgs{Name: config.Name, Columns: cols_to_delete, Key: wide_workflow.Name})
+				if err != nil {
+					fmt.Println("Error: ", err)
 				}
 			}
-		}
 
-		if len(results) > 0 {
-		 	out, err := execute.RunData(home, "store", execute.DataArgs{Name: config.Name, Results: results, Key: config.Workflows[0].Name})
-			if err != nil {
-				fmt.Println("Error: ", err)
+			for _, ch := range delChains {
+				present.PrintResult(ch, ch.Results, []parser.ErrorElem{}, "delete", "completed")
 			}
 
-			fmt.Printf("\ncalculated columns of '%v' workspace (current run):\n\n", config.Workflows[0].Name)
-			for _, line := range strings.Split(string(out), "\n") {
-				fmt.Printf("  %s\n", line)
+			// * handle RESULT STORAGE *
+			
+			all_affected := []string{}
+			for _, ch := range runChains {
+				all_affected = append(all_affected, ch.Name)
 			}
-		}
 
-		// * handle CLEANUP *
+			results := []string{}
+			for _, chain := range wide_workflow.Chains {
+				if Find(linked_chans, chain.Name) == -1 &&  Find(all_affected, chain.Name) != -1 {
+					for _, r := range chain.Results {
+						results = append(results, r.Id)
+					}
+				}
+			}
 
-		err = parser.WriteConfig(config, ".dac/config/.build.yml")
-		if err != nil {
-			log.Fatal(err)
-		}
+			if len(results) > 0 {
+				out, err := execute.RunData(home, "store", execute.DataArgs{Name: config.Name, Results: results, Key: wide_workflow.Name})
+				if err != nil {
+					fmt.Println("Error: ", err)
+				}
 
-		err = parser.WriteConfig(conf, ".dac/config/.build.wide.yml")
-		if err != nil {
-			log.Fatal(err)
+				fmt.Printf("\n  calculated columns of '%v' workspace (current run):\n\n", wide_workflow.Name)
+				for _, line := range strings.Split(string(out), "\n") {
+					fmt.Printf("   %s\n", line)
+				}
+			}
+
 		}
 
 
 		if !*runIntact {
-			reply, err := kvs.Info()
+			execute.StopEngine(kvs)
 			if err != nil {
 				fmt.Println("Error: ", err)
 			}
-			cmd := exec.Command("kill", "-9", reply.Pid)
-			err = cmd.Run()
-			if err != nil {
-				fmt.Println("Error: ", err)
-			}
-			fmt.Println("project engine closed...")
 		}
 	
 	case "check":
@@ -810,7 +856,6 @@ func main() {
 		for _, line := range strings.Split(string(out), "\n") {
 			fmt.Printf("  %s\n", line)
 		}
-
 
 	case "stop":
 
@@ -831,6 +876,7 @@ func main() {
 			fmt.Println("\nproject engine closed...")
 			fmt.Println("\ninteractive mode closed...")
 		}
+	
 	case "clear":
 
 		var kvs client.Rpc_client
@@ -861,6 +907,8 @@ func main() {
 		if err != nil {
 			fmt.Println("Error: ", err)
 		}
-
+	
+	case "help":
+		present.PrintHelp()
 	}
 }

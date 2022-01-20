@@ -168,3 +168,34 @@ func FindDiffs(old, new []parser.Chain) (map[int]parser.Chain, map[int]parser.Ch
 
 	return deleted, updated, created
 }
+
+func Find(slice []string, val string) (int) {
+	for i, item := range slice {
+		if item == val {
+			return i
+		}
+	}
+	return -1
+}
+
+func FindLink(chain parser.Chain, workflow parser.Workflow, chains_names []string, operation_chains []string, storagecols []string) []parser.Chain {
+	runChains := []parser.Chain{}
+	
+	link_chain := workflow.Chains[Find(chains_names, chain.Link)]
+	if len(link_chain.Results) == 0 {
+		runChains = append([]parser.Chain{link_chain}, runChains...)
+	} else {
+		for _, res := range link_chain.Results {
+			if Find(storagecols, res.Id) == -1 {
+				runChains = append([]parser.Chain{link_chain}, runChains...)
+				break
+			}
+		}
+	}
+
+	if link_chain.Link != "" && Find(operation_chains, chain.Link) == -1 {
+		return append(FindLink(link_chain, workflow, chains_names, operation_chains, storagecols), runChains...)
+	} else {
+		return runChains
+	}
+}

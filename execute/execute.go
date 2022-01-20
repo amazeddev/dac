@@ -1,6 +1,7 @@
 package execute
 
 import (
+	"dac/client"
 	"dac/parser"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -22,7 +24,7 @@ type DataArgs struct {
 	Path string						`json:"path,omitempty"`
 }
 
-func RunChain(homeDir string, args parser.Chain) ([]byte, error) {
+func RunChain(homeDir string, args parser.CalcChain) ([]byte, error) {
 	data, err := json.Marshal(args)
 	if err != nil {
 		return []byte{}, err
@@ -122,5 +124,53 @@ func DownloadExtract(fileUrl, homeDir string) ([]byte, error) {
 	return []byte{}, nil
 }
 
+func StopEngine(kvs client.Rpc_client) error {
+	reply, err := kvs.Info()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command("kill", "-9", reply.Pid)
+	err = cmd.Run()
+	if err != nil {
+		return err
+	}
+	fmt.Println("project engine closed...")
+
+	return nil
+}
+
+func StartEngin(kvs *client.Rpc_client, name string, home string) error {
+		err := kvs.Connect()
+		if err != nil {
+			fmt.Print("(re)initializing project engine...")
+			cmd := exec.Command(fmt.Sprintf("%v/%v", home, ".dac/kvstorage"))
+			cmd.Env = os.Environ()
+			cmd.Stdin = nil
+			cmd.Stdout = nil
+			cmd.Stderr = nil
+			cmd.ExtraFiles = nil
+			cmd.SysProcAttr = &syscall.SysProcAttr{
+				Setsid: true,
+			}
+
+			if err := cmd.Start(); err != nil {
+				return err
+			}
+
+			time.Sleep(2 * time.Second)
+
+			err = kvs.Connect()
+			if err != nil {
+				return err
+			}
+
+			_, err := kvs.SetPid(client.PidArgs{Name: name, Pid: fmt.Sprint(cmd.Process.Pid)})
+			if err != nil {
+				return err
+			}
+			fmt.Printf("DONE!\n")
+		}
+		return nil
+}
 
 
